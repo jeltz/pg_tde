@@ -269,7 +269,11 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 		goto cleanup;
 	}
 
+#if PG_VERSION_NUM >= 170000
 	jlex = makeJsonLexContextCstringLen(NULL, str.ptr, str.len, PG_UTF8, true);
+#else
+	jlex = makeJsonLexContextCstringLen(str.ptr, str.len, PG_UTF8, true);
+#endif
 	json_error = parse_json_response(&parse, jlex);
 
 	if (json_error != JSON_SUCCESS)
@@ -320,8 +324,10 @@ cleanup:
 	if (str.ptr != NULL)
 		pfree(str.ptr);
 
+#if PG_VERSION_NUM >= 170000
 	if (jlex != NULL)
 		freeJsonLexContext(jlex);
+#endif
 
 	return key;
 }
@@ -358,7 +364,11 @@ validate(GenericKeyring *keyring)
 				errmsg("failed to get mount info for \"%s\" at mountpoint \"%s\" (HTTP %ld)",
 					   vault_keyring->vault_url, vault_keyring->vault_mount_path, httpCode));
 
+#if PG_VERSION_NUM >= 170000
 	jlex = makeJsonLexContextCstringLen(NULL, str.ptr, str.len, PG_UTF8, true);
+#else
+	jlex = makeJsonLexContextCstringLen(str.ptr, str.len, PG_UTF8, true);
+#endif
 	json_error = parse_vault_mount_info(&parse, jlex);
 
 	if (json_error != JSON_SUCCESS)
@@ -418,8 +428,10 @@ validate(GenericKeyring *keyring)
 	if (str.ptr != NULL)
 		pfree(str.ptr);
 
+#if PG_VERSION_NUM >= 170000
 	if (jlex != NULL)
 		freeJsonLexContext(jlex);
+#endif
 }
 
 /*

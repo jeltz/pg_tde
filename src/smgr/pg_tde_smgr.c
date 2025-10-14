@@ -205,6 +205,8 @@ tde_smgr_rel_is_encrypted(SMgrRelation reln)
 		tdereln->encryption_status == RELATION_KEY_NOT_AVAILABLE;
 }
 
+#if PG_VERSION_NUM >= 170000
+
 static void
 tde_mdwritev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			 const void **buffers, BlockNumber nblocks, bool skipFsync)
@@ -248,6 +250,8 @@ tde_mdwritev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		pfree(local_buffers);
 	}
 }
+
+#endif
 
 /*
  * The current transaction might already be commited when this function is
@@ -310,6 +314,8 @@ tde_mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	}
 }
 
+#if PG_VERSION_NUM >= 170000
+
 static void
 tde_mdreadv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			void **buffers, BlockNumber nblocks)
@@ -360,6 +366,8 @@ tde_mdreadv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		AesDecrypt(tdereln->relKey.key, iv, ((unsigned char **) buffers)[i], BLCKSZ, ((unsigned char **) buffers)[i]);
 	}
 }
+
+#endif
 
 static void
 tde_mdcreate(RelFileLocator relold, SMgrRelation reln, ForkNumber forknum, bool isRedo)
@@ -531,13 +539,15 @@ static const struct f_smgr tde_smgr = {
 	.smgr_extend = tde_mdextend,
 	.smgr_zeroextend = mdzeroextend,
 	.smgr_prefetch = mdprefetch,
-	.smgr_readv = tde_mdreadv,
-	.smgr_writev = tde_mdwritev,
 	.smgr_writeback = mdwriteback,
 	.smgr_nblocks = mdnblocks,
 	.smgr_truncate = mdtruncate,
 	.smgr_immedsync = mdimmedsync,
+#if PG_VERSION_NUM >= 170000
+	.smgr_readv = tde_mdreadv,
+	.smgr_writev = tde_mdwritev,
 	.smgr_registersync = mdregistersync,
+#endif
 #if PG_VERSION_NUM >= 180000
 	.smgr_maxcombine = mdmaxcombine,
 	.smgr_startreadv = tde_mdstartreadv,
