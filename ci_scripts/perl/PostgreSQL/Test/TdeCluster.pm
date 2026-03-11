@@ -34,16 +34,6 @@ my %smgr_skip = (
 	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
 	'src/bin/pg_dump/t/010_dump_connstr.pl' =>
 	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
-	'src/bin/pg_upgrade/t/002_pg_upgrade.pl' =>
-	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
-	'src/bin/pg_upgrade/t/003_logical_slots.pl' =>
-	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
-	'src/bin/pg_upgrade/t/004_subscription.pl' =>
-	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
-	'src/bin/pg_upgrade/t/005_char_signedness.pl' =>
-	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
-	'src/bin/pg_upgrade/t/006_transfer_modes.pl' =>
-	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
 	'src/bin/scripts/t/020_createdb.pl' =>
 	  'tries to use FILE_COPY strategy for database creation with encrypted objects in the template',
 	'src/test/recovery/t/014_unlogged_reinit.pl' => 'invalid page in block',
