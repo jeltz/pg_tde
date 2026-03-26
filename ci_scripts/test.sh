@@ -6,16 +6,4 @@ SCRIPT_DIR="$(cd -- "$(dirname "$0")" >/dev/null 2>&1; pwd -P)"
 
 cd "$SCRIPT_DIR/../build"
 
-OPTS='--set shared_preload_libraries=pg_tde'
-
-if [ "$1" = sanitize ]; then
-    OPTS+=' --set max_stack_depth=8MB'
-fi
-
-../../pginst/bin/pg_ctl -D regress_install -l regress_install.log init -o "$OPTS"
-
-../../pginst/bin/pg_ctl -D regress_install -l regress_install.log start
-
 meson test --timeout-multiplier=0 --print-errorlogs
-
-../../pginst/bin/pg_ctl -D regress_install stop

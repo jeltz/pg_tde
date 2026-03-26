@@ -277,27 +277,6 @@ executable('pg_tde_waldump',
   link_with: [pg_tde_frontend, pg_tde_frontend_xlog],
 )
 
-regress_tests = [
-  'access_control',
-  'alter_index',
-  'cache_alloc',
-  'change_access_method',
-  'create_database',
-  'default_principal_key',
-  'delete_principal_key',
-  'insert_update_delete',
-  'key_provider',
-  'kmip_test',
-  'partition_table',
-  'pg_tde_is_encrypted',
-  'recreate_storage',
-  'relocate',
-  'tablespace',
-  'toast_decrypt',
-  'vault_v2_test',
-  'version',
-]
-
 tap_tests = [
   't/2pc_replication.pl',
   't/basic.pl',
@@ -323,6 +302,7 @@ tap_tests = [
   't/pg_tde_upgrade.pl',
   't/pg_waldump_basic.pl',
   't/pg_waldump_fullpage.pl',
+  't/regress.pl',
   't/replication.pl',
   't/rotate_key.pl',
   't/stream_rep.pl',
@@ -335,14 +315,6 @@ tap_tests = [
 ]
 
 pg_regress = find_program('pg_regress', dirs: [pkglibdir / 'pgxs/src/test/regress'])
-
-test('regress',
-  pg_regress,
-  args: [
-    '--bindir', bindir,
-    '--inputdir', meson.current_source_dir(),
-  ] + regress_tests,
-)
 
 testwrap = files('testwrap')
 perl = find_program('perl')
