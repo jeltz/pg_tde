@@ -101,17 +101,18 @@ SCRIPTS_built = \
 	src/bin/pg_tde_archive_decrypt \
 	src/bin/pg_tde_change_key_provider \
 	src/bin/pg_tde_restore_encrypt \
+	src/bin/pg_tde_upgrade \
 	$(FETOOLS)/pg_tde_basebackup \
 	$(FETOOLS)/pg_tde_checksums \
 	$(FETOOLS)/pg_tde_resetwal \
 	$(FETOOLS)/pg_tde_rewind \
 	$(FETOOLS)/pg_tde_waldump
 
-EXTRA_INSTALL = contrib/pg_buffercache contrib/test_decoding
 EXTRA_CLEAN = \
 	src/bin/pg_tde_archive_decrypt.o \
 	src/bin/pg_tde_change_key_provider.o \
 	src/bin/pg_tde_restore_encrypt.o \
+	src/bin/pg_tde_upgrade.o \
 	$(FETOOLS)/xlogreader.o \
 	$(FETOOLS)/xlogstats.o \
 	$(TDE_XLOG_OBJS) \
@@ -130,7 +131,7 @@ PG_CPPFLAGS = -Isrc/include -Isrc/libkmip/libkmip/include -I$(FETOOLS)/include -
 include $(PGXS)
 
 SHLIB_LINK += -lcurl -lcrypto -lssl
-LDFLAGS_EX += -Lsrc/fe_utils -lcurl -lcrypto -lssl -lz -lzstd -llz4 -lpgfeutils $(libpq_pgport)
+LDFLAGS_EX += -lcurl -lcrypto -lssl -lz -lzstd -llz4 -lpgfeutils $(libpq_pgport)
 
 ifeq ($(MAJORVERSION),18)
 BBOBJS = \
@@ -162,6 +163,9 @@ src/bin/pg_tde_archive_decrypt: src/bin/pg_tde_archive_decrypt.o $(FETOOLS)/xlog
 	$(CC) $(CFLAGS) $^ $(PG_LIBS_INTERNAL) $(LDFLAGS) $(LDFLAGS_EX) $(PG_LIBS) $(LIBS) -o $@$(X)
 
 src/bin/pg_tde_restore_encrypt: src/bin/pg_tde_restore_encrypt.o $(FETOOLS)/xlogreader.o libtdexlog.a libtde.a
+	$(CC) $(CFLAGS) $^ $(PG_LIBS_INTERNAL) $(LDFLAGS) $(LDFLAGS_EX) $(PG_LIBS) $(LIBS) -o $@$(X)
+
+src/bin/pg_tde_upgrade: src/bin/pg_tde_upgrade.o
 	$(CC) $(CFLAGS) $^ $(PG_LIBS_INTERNAL) $(LDFLAGS) $(LDFLAGS_EX) $(PG_LIBS) $(LIBS) -o $@$(X)
 
 $(FETOOLS)/pg_tde_basebackup: $(BBOBJS) $(FETOOLS)/xlogreader.o libtdexlog.a libtde.a

@@ -24,8 +24,6 @@ my %smgr_skip = (
 	  'hacks relation files directly for scaffolding',
 	'src/bin/pg_amcheck/t/003_check.pl' =>
 	  'hacks relation files directly for scaffolding',
-	'src/bin/pg_amcheck/t/005_opclass_damage.pl' =>
-	  'investigate why this fails',
 	'src/bin/pg_basebackup/t/010_pg_basebackup.pl' =>
 	  'uses corrupt_page_checksum to directly hack relation files',
 	'src/bin/pg_checksums/t/002_actions.pl' =>
@@ -46,10 +44,8 @@ my %smgr_skip = (
 	  'pg_restore fail to restore _pg_tde schema on cluster which already has it',
 	'src/bin/scripts/t/020_createdb.pl' =>
 	  'tries to use FILE_COPY strategy for database creation with encrypted objects in the template',
-	'src/test/recovery/t/014_unlogged_reinit.pl' => 'invalid page in block',
 	'src/test/recovery/t/016_min_consistency.pl' =>
 	  'reads LSN directly from relation files',
-	'src/test/recovery/t/018_wal_optimize.pl' => 'invalid page in block',
 	'src/test/recovery/t/032_relfilenode_reuse.pl' => 'invalid page in block',
 	'src/test/recovery/t/043_no_contrecord_switch.pl' =>
 	  'uses write_wal to hack wal directly');
