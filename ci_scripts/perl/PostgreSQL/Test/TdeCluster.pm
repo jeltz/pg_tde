@@ -24,8 +24,6 @@ my %smgr_skip = (
 	  'hacks relation files directly for scaffolding',
 	'src/bin/pg_amcheck/t/003_check.pl' =>
 	  'hacks relation files directly for scaffolding',
-	'src/bin/pg_amcheck/t/005_opclass_damage.pl' =>
-	  'investigate why this fails',
 	'src/bin/pg_basebackup/t/010_pg_basebackup.pl' =>
 	  'uses corrupt_page_checksum to directly hack relation files',
 	'src/bin/pg_checksums/t/002_actions.pl' =>
