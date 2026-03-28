@@ -108,7 +108,6 @@ static void
 AesRunCbc(int enc, const unsigned char *key, int key_len, const unsigned char *iv, const unsigned char *in, int in_len, unsigned char *out)
 {
 	int			out_len;
-	int			out_len_final;
 	EVP_CIPHER_CTX *ctx;
 
 	Assert(key_len == 16 || key_len == 32);
@@ -125,15 +124,6 @@ AesRunCbc(int enc, const unsigned char *key, int key_len, const unsigned char *i
 		ereport(ERROR,
 				errmsg("EVP_CipherUpdate failed. OpenSSL error: %s", ERR_error_string(ERR_get_error(), NULL)));
 
-	if (EVP_CipherFinal_ex(ctx, out + out_len, &out_len_final) == 0)
-		ereport(ERROR,
-				errmsg("EVP_CipherFinal_ex failed. OpenSSL error: %s", ERR_error_string(ERR_get_error(), NULL)));
-
-	/*
-	 * We encrypt one block (16 bytes) Our expectation is that the result
-	 * should also be 16 bytes, without any additional padding
-	 */
-	out_len += out_len_final;
 	Assert(in_len == out_len);
 }
 
