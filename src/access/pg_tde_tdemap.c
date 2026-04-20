@@ -40,7 +40,8 @@
 }
 #endif
 
-#define PG_TDE_MAP_FILENAME			"%d_keys"
+#define PG_TDE_MAP_DIRNAME			"%d_keys"
+#define PG_TDE_MAP_FILENAME			"principal"
 
 typedef enum
 {
@@ -75,13 +76,13 @@ typedef struct TDEMapEntry
 	uint8		encrypted_key_data[INTERNAL_KEY_MAX_LEN];
 } TDEMapEntry;
 
+static void pg_tde_set_key_dir_path(Oid dbOid, char *path);
+static void pg_tde_set_key_file_path(const RelFileLocator *rel, char *path);
 static void pg_tde_set_db_file_path(Oid dbOid, char *path);
-static bool pg_tde_find_map_entry(const RelFileLocator *rlocator, char *db_map_path, TDEMapEntry *map_entry);
 static InternalKey *tde_decrypt_rel_key(const TDEPrincipalKey *principal_key, TDEMapEntry *map_entry);
 static int	pg_tde_open_file_basic(const char *tde_filename, int fileFlags, bool ignore_missing);
-static int	pg_tde_open_file_read(const char *tde_filename, bool ignore_missing, off_t *curr_pos);
 static void pg_tde_file_header_read(const char *tde_filename, int fd, TDEFileHeader *fheader, off_t *bytes_read);
-static bool pg_tde_read_one_map_entry(int fd, TDEMapEntry *map_entry, off_t *offset);
+static void pg_tde_read_key_file(int fd, TDEMapEntry *map_entry);
 
 #ifndef FRONTEND
 static void pg_tde_write_one_map_entry(int fd, const TDEMapEntry *map_entry, off_t *offset, const char *db_map_path);
@@ -100,13 +101,13 @@ pg_tde_save_smgr_key(RelFileLocator rel,
 					 bool replace_existing)
 {
 	char		file_path[MAXPGPATH];
-	bool		entry_already_exists;
-	int			fd;
-	LWLock	   *lock_pk = tde_lwlock_enc_keys();
 	TDEPrincipalKey *principal_key;
-	off_t		scan_offset;
-	TDESignedPrincipalKeyInfo signed_key_info;
-	off_t		write_offset;
+	int			fd;
+	TDEMapEntry write_entry;
+	off_t		write_offset = 0;
+	LWLock	   *lock_pk = tde_lwlock_enc_keys();
+
+	pg_tde_set_key_file_path(&rel, file_path);
 
 	LWLockAcquire(lock_pk, LW_EXCLUSIVE);
 	principal_key = GetPrincipalKey(rel.dbOid, LW_EXCLUSIVE);
@@ -117,54 +118,26 @@ pg_tde_save_smgr_key(RelFileLocator rel,
 				errhint("Use pg_tde_set_key_using_database_key_provider() or pg_tde_set_key_using_global_key_provider() to configure one."));
 	}
 
-	pg_tde_set_db_file_path(rel.dbOid, file_path);
-	pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
-
-	fd = pg_tde_open_file_write(file_path, &signed_key_info, false, &scan_offset);
-
-	/*
-	 * Look for an existing entry for the relation, also keep track of the
-	 * first free entry we find to be reused for the new key we're saving.
-	 */
-	entry_already_exists = false;
-	write_offset = 0;
-	while (1)
+	if (replace_existing)
+		fd = OpenTransientFile(file_path, O_CREAT | O_WRONLY | PG_BINARY);
+	else
 	{
-		TDEMapEntry entry;
-		off_t		entry_offset = scan_offset;
-
-		if (!pg_tde_read_one_map_entry(fd, &entry, &scan_offset))
+		fd = OpenTransientFile(file_path, O_CREAT | O_WRONLY | PG_BINARY | O_EXCL);
+		if (fd < 0 && errno == EEXIST)
 		{
-			/*
-			 * If we're through the whole file without having found an empty
-			 * entry to overwrite, write at the end.
-			 */
-			if (write_offset == 0)
-				write_offset = entry_offset;
-			break;
+			LWLockRelease(lock_pk);
+			return;
 		}
-
-		if (entry.spcOid == rel.spcOid &&
-			entry.relNumber == rel.relNumber)
-		{
-			entry_already_exists = true;
-			write_offset = entry_offset;
-			break;
-		}
-
-		if (write_offset == 0 && entry.type == MAP_ENTRY_TYPE_EMPTY)
-			write_offset = entry_offset;
 	}
 
-	if (!entry_already_exists || replace_existing)
-	{
-		TDEMapEntry write_entry;
+	if (fd < 0)
+		elog(ERROR, "failed to open key files \"%s\": %m", file_path);
 
-		pg_tde_initialize_map_entry(&write_entry, principal_key, &rel, rel_key_data);
-		pg_tde_write_one_map_entry(fd, &write_entry, &write_offset, file_path);
-	}
+	pg_tde_initialize_map_entry(&write_entry, principal_key, &rel, rel_key_data);
+	pg_tde_write_one_map_entry(fd, &write_entry, &write_offset, file_path);
 
 	CloseTransientFile(fd);
+
 	LWLockRelease(lock_pk);
 }
 
@@ -198,12 +171,19 @@ void
 pg_tde_save_principal_key_redo(const TDESignedPrincipalKeyInfo *signed_key_info)
 {
 	int			map_fd;
-	off_t		curr_pos;
+	off_t		curr_pos = 0;
+	char		dir_path[MAXPGPATH];
 	char		db_map_path[MAXPGPATH];
 
+	pg_tde_set_key_dir_path(signed_key_info->data.databaseId, dir_path);
 	pg_tde_set_db_file_path(signed_key_info->data.databaseId, db_map_path);
 
 	LWLockAcquire(tde_lwlock_enc_keys(), LW_EXCLUSIVE);
+
+	if (MakePGDirectory(dir_path) < 0 && errno != EEXIST)
+		ereport(ERROR,
+			errcode_for_file_access(),
+			errmsg("could not create tde key directory \"%s\": %m", dir_path));
 
 	map_fd = pg_tde_open_file_write(db_map_path, signed_key_info, false, &curr_pos);
 	CloseTransientFile(map_fd);
@@ -228,21 +208,28 @@ pg_tde_save_principal_key(const TDEPrincipalKey *principal_key, bool write_xlog)
 {
 	int			map_fd;
 	off_t		curr_pos = 0;
+	char		dir_path[MAXPGPATH];
 	char		db_map_path[MAXPGPATH];
-	TDESignedPrincipalKeyInfo signed_key_Info;
+	TDESignedPrincipalKeyInfo signed_key_info;
 
+	pg_tde_set_key_dir_path(principal_key->keyInfo.databaseId, dir_path);
 	pg_tde_set_db_file_path(principal_key->keyInfo.databaseId, db_map_path);
 
-	pg_tde_sign_principal_key_info(&signed_key_Info, principal_key);
+	pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
 
 	if (write_xlog)
 	{
 		XLogBeginInsert();
-		XLogRegisterData((char *) &signed_key_Info, sizeof(TDESignedPrincipalKeyInfo));
+		XLogRegisterData((char *) &signed_key_info, sizeof(TDESignedPrincipalKeyInfo));
 		XLogInsert(RM_TDERMGR_ID, XLOG_TDE_ADD_PRINCIPAL_KEY);
 	}
 
-	map_fd = pg_tde_open_file_write(db_map_path, &signed_key_Info, true, &curr_pos);
+	if (MakePGDirectory(dir_path) < 0 && errno != EEXIST)
+		ereport(ERROR,
+			errcode_for_file_access(),
+			errmsg("could not create tde key directory \"%s\": %m", dir_path));
+
+	map_fd = pg_tde_open_file_write(db_map_path, &signed_key_info, true, &curr_pos);
 	CloseTransientFile(map_fd);
 }
 
@@ -255,37 +242,14 @@ pg_tde_save_principal_key(const TDEPrincipalKey *principal_key, bool write_xlog)
 void
 pg_tde_free_key_map_entry(const RelFileLocator rlocator)
 {
-	char		db_map_path[MAXPGPATH];
-	File		map_fd;
-	off_t		curr_pos = 0;
+	char		file_path[MAXPGPATH];
 
-	pg_tde_set_db_file_path(rlocator.dbOid, db_map_path);
+	pg_tde_set_key_file_path(&rlocator, file_path);
 
 	LWLockAcquire(tde_lwlock_enc_keys(), LW_EXCLUSIVE);
 
-	/* Open and validate file for basic correctness. */
-	map_fd = pg_tde_open_file_write(db_map_path, NULL, false, &curr_pos);
-
-	while (1)
-	{
-		TDEMapEntry map_entry;
-		off_t		prev_pos = curr_pos;
-
-		if (!pg_tde_read_one_map_entry(map_fd, &map_entry, &curr_pos))
-			break;
-
-		if (map_entry.type == MAP_ENTRY_TYPE_KEY && map_entry.spcOid == rlocator.spcOid && map_entry.relNumber == rlocator.relNumber)
-		{
-			TDEMapEntry empty_map_entry = {
-				.type = MAP_ENTRY_TYPE_EMPTY,
-			};
-
-			pg_tde_write_one_map_entry(map_fd, &empty_map_entry, &prev_pos, db_map_path);
-			break;
-		}
-	}
-
-	CloseTransientFile(map_fd);
+	if (unlink(file_path) == -1 && errno != ENOENT)
+		elog(ERROR, "removing key file \"%s\" failed: %m", file_path);
 
 	LWLockRelease(tde_lwlock_enc_keys());
 }
@@ -297,12 +261,13 @@ void
 pg_tde_perform_rotate_key(const TDEPrincipalKey *principal_key, const TDEPrincipalKey *new_principal_key, bool write_xlog)
 {
 	TDESignedPrincipalKeyInfo new_signed_key_info;
-	off_t		old_curr_pos,
-				new_curr_pos;
-	int			old_fd,
-				new_fd;
-	char		old_path[MAXPGPATH],
-				new_path[MAXPGPATH];
+	char		old_path[MAXPGPATH];
+	char		new_path[MAXPGPATH];
+	char		new_pk_path[MAXPGPATH];
+	DIR		   *old_dir;
+	off_t		curr_pos = 0;
+	int			new_pk_fd;
+	struct dirent *dirent;
 
 	/* This function cannot be used to rotate the server key. */
 	Assert(principal_key);
@@ -310,25 +275,47 @@ pg_tde_perform_rotate_key(const TDEPrincipalKey *principal_key, const TDEPrincip
 
 	pg_tde_sign_principal_key_info(&new_signed_key_info, new_principal_key);
 
-	pg_tde_set_db_file_path(principal_key->keyInfo.databaseId, old_path);
-	snprintf(new_path, MAXPGPATH, "%s.r", old_path);
+	pg_tde_set_key_dir_path(principal_key->keyInfo.databaseId, old_path);
+	snprintf(new_path, MAXPGPATH, "%s.r", old_path); // TODO: better name?
+	snprintf(new_pk_path, MAXPGPATH, "%s/%s", new_path, PG_TDE_MAP_FILENAME);
 
-	old_fd = pg_tde_open_file_read(old_path, false, &old_curr_pos);
-	new_fd = pg_tde_open_file_write(new_path, &new_signed_key_info, true, &new_curr_pos);
+	// TODO: Handle errors
+	old_dir = opendir(old_path);
 
-	/* Read all entries until EOF */
-	while (1)
+	// TODO: Remove posisble old temporary dirctory
+
+	// TODO: Handle errors
+	MakePGDirectory(new_path);
+
+	new_pk_fd = pg_tde_open_file_write(new_pk_path, &new_signed_key_info, true, &curr_pos);
+	CloseTransientFile(new_pk_fd);
+
+	// TODO: Handle errors
+	while ((dirent = readdir(old_dir)) != NULL)
 	{
+		char		read_path[MAXPGPATH];
+		char		write_path[MAXPGPATH];
+		int			read_fd;
+		int			write_fd;
 		InternalKey *rel_key_data;
 		TDEMapEntry read_map_entry,
 					write_map_entry;
 		RelFileLocator rloc;
+		off_t		new_curr_pos = 0;
 
-		if (!pg_tde_read_one_map_entry(old_fd, &read_map_entry, &old_curr_pos))
-			break;
-
-		if (read_map_entry.type == MAP_ENTRY_TYPE_EMPTY)
+		if (strcmp(dirent->d_name, ".") == 0 ||
+			strcmp(dirent->d_name, "..") == 0 ||
+			strcmp(dirent->d_name, PG_TDE_MAP_FILENAME) == 0)
 			continue;
+
+		sprintf(read_path, "%s/%s", old_path, dirent->d_name);
+
+		// TODO: Handle errors
+		read_fd = OpenTransientFile(read_path, O_RDONLY | PG_BINARY);
+
+		pg_tde_read_key_file(read_fd, &read_map_entry);
+
+		CloseTransientFile(read_fd);
 
 		rloc.spcOid = read_map_entry.spcOid;
 		rloc.dbOid = principal_key->keyInfo.databaseId;
@@ -338,19 +325,23 @@ pg_tde_perform_rotate_key(const TDEPrincipalKey *principal_key, const TDEPrincip
 		rel_key_data = tde_decrypt_rel_key(principal_key, &read_map_entry);
 		pg_tde_initialize_map_entry(&write_map_entry, new_principal_key, &rloc, rel_key_data);
 
-		pg_tde_write_one_map_entry(new_fd, &write_map_entry, &new_curr_pos, new_path);
+		sprintf(write_path, "%s/%s", new_path, dirent->d_name);
+
+		// TODO: Handle errors
+		write_fd = OpenTransientFile(write_path, O_CREAT | O_WRONLY | PG_BINARY);
+
+		pg_tde_write_one_map_entry(write_fd, &write_map_entry, &new_curr_pos, write_path);
+
+		CloseTransientFile(write_fd);
 
 		pfree(rel_key_data);
 	}
 
-	CloseTransientFile(old_fd);
-	CloseTransientFile(new_fd);
+	closedir(old_dir);
 
-	/*
-	 * Do the final step - replace the current _keys with the file with new
-	 * data
-	 */
-	durable_rename(new_path, old_path, ERROR);
+	// TODO: Wrong as fuck
+	rmtree(old_path, true);
+	rename(new_path, old_path);
 
 	/*
 	 * We do WAL writes past the event ("the write behind logging") rather
@@ -382,10 +373,12 @@ pg_tde_delete_principal_key_redo(Oid dbOid)
 {
 	char		path[MAXPGPATH];
 
-	pg_tde_set_db_file_path(dbOid, path);
+	pg_tde_set_key_dir_path(dbOid, path);
 
 	LWLockAcquire(tde_lwlock_enc_keys(), LW_EXCLUSIVE);
-	durable_unlink(path, WARNING);
+	// TODO: Wrong as fuck
+	if (access(path, F_OK) != -1)
+		rmtree(path, false);
 	LWLockRelease(tde_lwlock_enc_keys());
 }
 
@@ -401,22 +394,35 @@ pg_tde_delete_principal_key(Oid dbOid)
 	Assert(LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_EXCLUSIVE));
 	Assert(pg_tde_count_encryption_keys(dbOid, InvalidOid) == 0);
 
-	pg_tde_set_db_file_path(dbOid, path);
+	pg_tde_set_key_dir_path(dbOid, path);
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &dbOid, sizeof(Oid));
 	XLogInsert(RM_TDERMGR_ID, XLOG_TDE_DELETE_PRINCIPAL_KEY);
 
-	/* Remove whole key map file */
-	durable_unlink(path, ERROR);
+	// TODO: Wrong as fuck
+	if (access(path, F_OK) != -1)
+		rmtree(path, false);
 }
 
 #endif							/* !FRONTEND */
 
 static void
+pg_tde_set_key_dir_path(Oid dbOid, char *path)
+{
+	snprintf(path, MAXPGPATH, "%s/" PG_TDE_MAP_DIRNAME, pg_tde_get_data_dir(), dbOid);
+}
+
+static void
+pg_tde_set_key_file_path(const RelFileLocator *rel, char *path)
+{
+	snprintf(path, MAXPGPATH, "%s/%d_keys/%d_%d", pg_tde_get_data_dir(), rel->dbOid, rel->spcOid, rel->relNumber);
+}
+
+static void
 pg_tde_set_db_file_path(Oid dbOid, char *path)
 {
-	snprintf(path, MAXPGPATH, "%s/" PG_TDE_MAP_FILENAME, pg_tde_get_data_dir(), dbOid);
+	snprintf(path, MAXPGPATH, "%s/" PG_TDE_MAP_DIRNAME "/" PG_TDE_MAP_FILENAME, pg_tde_get_data_dir(), dbOid);
 }
 
 void
@@ -490,68 +496,49 @@ pg_tde_write_one_map_entry(int fd, const TDEMapEntry *map_entry, off_t *offset, 
 #endif
 
 /*
- * Returns true if we find a valid match; e.g. type is not set to
- * MAP_ENTRY_TYPE_EMPTY and the relNumber and spcOid matches the one provided
- * in rlocator.
- */
-static bool
-pg_tde_find_map_entry(const RelFileLocator *rlocator, char *db_map_path, TDEMapEntry *map_entry)
-{
-	File		map_fd;
-	off_t		curr_pos = 0;
-	bool		found = false;
-
-	Assert(rlocator != NULL);
-
-	map_fd = pg_tde_open_file_read(db_map_path, false, &curr_pos);
-
-	while (pg_tde_read_one_map_entry(map_fd, map_entry, &curr_pos))
-	{
-		if (map_entry->type == MAP_ENTRY_TYPE_KEY && map_entry->spcOid == rlocator->spcOid && map_entry->relNumber == rlocator->relNumber)
-		{
-			found = true;
-			break;
-		}
-	}
-
-	CloseTransientFile(map_fd);
-
-	return found;
-}
-
-/*
  * Counts number of encryption keys in a key file.
  *
  * Does not check if objects actually exist but just that they have keys in
  * the key file.
  *
- * Works even if the database has no key file.
+ * Works even if the database has no key directory.
  */
 int
 pg_tde_count_encryption_keys(Oid dbOid, Oid spcOid)
 {
-	char		db_map_path[MAXPGPATH];
-	File		map_fd;
-	off_t		curr_pos = 0;
-	TDEMapEntry map_entry;
+	char		dir_path[MAXPGPATH];
+	DIR		   *dir;
 	int			count = 0;
+	char		spcoid_string[MAXPGPATH]; // TODO: Sane size
+	struct dirent *dirent;
 
 	Assert(LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_SHARED) || LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_EXCLUSIVE));
 
-	pg_tde_set_db_file_path(dbOid, db_map_path);
+	pg_tde_set_key_dir_path(dbOid, dir_path);
 
-	map_fd = pg_tde_open_file_read(db_map_path, true, &curr_pos);
-	if (map_fd < 0)
+	dir = opendir(dir_path);
+	if (dir == NULL) // TODO: Handle errors
 		return count;
 
-	while (pg_tde_read_one_map_entry(map_fd, &map_entry, &curr_pos))
+	if (spcOid != InvalidOid)
+		sprintf(spcoid_string, "%u", spcOid);
+
+	// TODO: Error handling
+	while ((dirent = readdir(dir)) != NULL)
 	{
-		if (map_entry.type == MAP_ENTRY_TYPE_KEY &&
-			(spcOid == InvalidOid || map_entry.spcOid == spcOid))
-			count++;
+		if (spcOid != InvalidOid && strncmp(dirent->d_name, spcoid_string, strlen(spcoid_string)) != 0)
+			continue;
+
+		// TODO: More exact check?
+		if (strcmp(dirent->d_name, ".") == 0 ||
+			strcmp(dirent->d_name, "..") == 0 ||
+			strcmp(dirent->d_name, PG_TDE_MAP_FILENAME) == 0)
+			continue;
+
+		count++;
 	}
 
-	CloseTransientFile(map_fd);
+	closedir(dir);
 
 	return count;
 }
@@ -608,37 +595,6 @@ pg_tde_open_file_basic(const char *tde_filename, int fileFlags, bool ignore_miss
 				errcode_for_file_access(),
 				errmsg("could not open tde file \"%s\": %m", tde_filename));
 	}
-
-	return fd;
-}
-
-/*
- * Open for read and Validate File Header:
- * 		header: {Format Version, Principal Key Name}
- *
- * Returns the file descriptor in case of a success. Otherwise, error
- * is raised.
- */
-static int
-pg_tde_open_file_read(const char *tde_filename, bool ignore_missing, off_t *curr_pos)
-{
-	int			fd;
-	TDEFileHeader fheader;
-	off_t		bytes_read = 0;
-
-	Assert(LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_SHARED) || LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_EXCLUSIVE));
-
-	fd = pg_tde_open_file_basic(tde_filename, O_RDONLY | PG_BINARY, ignore_missing);
-	if (ignore_missing && fd < 0)
-		return fd;
-
-	pg_tde_file_header_read(tde_filename, fd, &fheader, &bytes_read);
-	if (bytes_read > 0 && fheader.file_version != PG_TDE_SMGR_FILE_MAGIC)
-		ereport(FATAL,
-				errcode_for_file_access(),
-				errmsg("key file \"%s\" has wrong version: %m", tde_filename));
-
-	*curr_pos = bytes_read;
 
 	return fd;
 }
@@ -736,27 +692,17 @@ pg_tde_file_header_write(const char *tde_filename, int fd, const TDESignedPrinci
 }
 #endif
 
-/*
- * Returns true if a map entry if found or false if we have reached the end of
- * the file.
- */
-static bool
-pg_tde_read_one_map_entry(int map_file, TDEMapEntry *map_entry, off_t *offset)
+static void
+pg_tde_read_key_file(int map_file, TDEMapEntry *map_entry)
 {
-	off_t		bytes_read = 0;
+	off_t		bytes_read;
 
 	Assert(map_entry);
-	Assert(offset);
 
-	bytes_read = pg_pread(map_file, map_entry, sizeof(TDEMapEntry), *offset);
+	bytes_read = pg_pread(map_file, map_entry, sizeof(TDEMapEntry), 0);
 
-	/* We've reached the end of the file. */
 	if (bytes_read != sizeof(TDEMapEntry))
-		return false;
-
-	*offset += bytes_read;
-
-	return true;
+		elog(ERROR, "too short read: got %ld expected %lu", bytes_read, sizeof(TDEMapEntry));
 }
 
 /*
@@ -817,22 +763,24 @@ pg_tde_get_principal_key_info(Oid dbOid)
 bool
 pg_tde_has_smgr_key(RelFileLocator rel)
 {
+	char		file_path[MAXPGPATH];
 	bool		result;
-	TDEMapEntry map_entry;
-	char		db_map_path[MAXPGPATH];
+	LWLock	   *lock_pk = tde_lwlock_enc_keys();
 
 	Assert(rel.relNumber != InvalidRelFileNumber);
 
-	pg_tde_set_db_file_path(rel.dbOid, db_map_path);
+	pg_tde_set_key_file_path(&rel, file_path);
 
-	if (access(db_map_path, F_OK) == -1)
-		return false;
+	LWLockAcquire(lock_pk, LW_SHARED);
 
-	LWLockAcquire(tde_lwlock_enc_keys(), LW_SHARED);
+	// TODO: Handle errors
+	if (access(file_path, F_OK) == -1)
+		result = false;
+	else
+		result = true;
 
-	result = pg_tde_find_map_entry(&rel, db_map_path, &map_entry);
+	LWLockRelease(lock_pk);
 
-	LWLockRelease(tde_lwlock_enc_keys());
 	return result;
 }
 
@@ -842,26 +790,31 @@ pg_tde_has_smgr_key(RelFileLocator rel)
 InternalKey *
 pg_tde_get_smgr_key(RelFileLocator rel)
 {
+	char		file_path[MAXPGPATH];
+	int			fd;
 	TDEMapEntry map_entry;
 	TDEPrincipalKey *principal_key;
-	LWLock	   *lock_pk = tde_lwlock_enc_keys();
-	char		db_map_path[MAXPGPATH];
 	InternalKey *rel_key;
+	LWLock	   *lock_pk = tde_lwlock_enc_keys();
 
 	Assert(rel.relNumber != InvalidRelFileNumber);
 
-	pg_tde_set_db_file_path(rel.dbOid, db_map_path);
-
-	if (access(db_map_path, F_OK) == -1)
-		return NULL;
+	pg_tde_set_key_file_path(&rel, file_path);
 
 	LWLockAcquire(lock_pk, LW_SHARED);
 
-	if (!pg_tde_find_map_entry(&rel, db_map_path, &map_entry))
+	fd = OpenTransientFile(file_path, O_RDONLY | PG_BINARY);
+
+	// TODO: Handle errors
+	if (fd == -1)
 	{
 		LWLockRelease(lock_pk);
 		return NULL;
 	}
+
+	pg_tde_read_key_file(fd, &map_entry);
+
+	CloseTransientFile(fd);
 
 	/*
 	 * Get/generate a principal key, create the key for relation and get the
