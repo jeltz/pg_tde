@@ -88,7 +88,7 @@ static void pg_tde_read_key_file(int fd, TDEMapEntry *map_entry);
 static void pg_tde_write_one_map_entry(int fd, const TDEMapEntry *map_entry, off_t *offset, const char *db_map_path);
 static int	pg_tde_file_header_write(const char *tde_filename, int fd, const TDESignedPrincipalKeyInfo *signed_key_info, off_t *bytes_written);
 static void pg_tde_initialize_map_entry(TDEMapEntry *map_entry, const TDEPrincipalKey *principal_key, const RelFileLocator *rlocator, const InternalKey *rel_key_data);
-static int	pg_tde_open_file_write(const char *tde_filename, const TDESignedPrincipalKeyInfo *signed_key_info, bool truncate, off_t *curr_pos);
+static void pg_tde_write_principal_key(const char *filename, const TDESignedPrincipalKeyInfo *signed_key_info);
 
 /*
  * Saves an internal key for the given relation. If replace_existing is false,
@@ -170,8 +170,6 @@ pg_tde_delete_tde_files(Oid dbOid)
 void
 pg_tde_save_principal_key_redo(const TDESignedPrincipalKeyInfo *signed_key_info)
 {
-	int			map_fd;
-	off_t		curr_pos = 0;
 	char		dir_path[MAXPGPATH];
 	char		db_map_path[MAXPGPATH];
 
@@ -185,8 +183,7 @@ pg_tde_save_principal_key_redo(const TDESignedPrincipalKeyInfo *signed_key_info)
 			errcode_for_file_access(),
 			errmsg("could not create tde key directory \"%s\": %m", dir_path));
 
-	map_fd = pg_tde_open_file_write(db_map_path, signed_key_info, false, &curr_pos);
-	CloseTransientFile(map_fd);
+	pg_tde_write_principal_key(db_map_path, signed_key_info);
 
 	LWLockRelease(tde_lwlock_enc_keys());
 }
@@ -206,8 +203,6 @@ pg_tde_save_principal_key_redo(const TDESignedPrincipalKeyInfo *signed_key_info)
 void
 pg_tde_save_principal_key(const TDEPrincipalKey *principal_key, bool write_xlog)
 {
-	int			map_fd;
-	off_t		curr_pos = 0;
 	char		dir_path[MAXPGPATH];
 	char		db_map_path[MAXPGPATH];
 	TDESignedPrincipalKeyInfo signed_key_info;
@@ -229,8 +224,7 @@ pg_tde_save_principal_key(const TDEPrincipalKey *principal_key, bool write_xlog)
 			errcode_for_file_access(),
 			errmsg("could not create tde key directory \"%s\": %m", dir_path));
 
-	map_fd = pg_tde_open_file_write(db_map_path, &signed_key_info, true, &curr_pos);
-	CloseTransientFile(map_fd);
+	pg_tde_write_principal_key(db_map_path, &signed_key_info);
 }
 
 /*
@@ -287,8 +281,7 @@ pg_tde_perform_rotate_key(const TDEPrincipalKey *principal_key, const TDEPrincip
 	// TODO: Handle errors
 	MakePGDirectory(new_path);
 
-	new_pk_fd = pg_tde_open_file_write(new_pk_path, &new_signed_key_info, true, &curr_pos);
-	CloseTransientFile(new_pk_fd);
+	pg_tde_write_principal_key(new_pk_path, &new_signed_key_info);
 
 	// TODO: Handle errors
 	while ((dirent = readdir(old_dir)) != NULL)
@@ -600,38 +593,19 @@ pg_tde_open_file_basic(const char *tde_filename, int fileFlags, bool ignore_miss
 }
 
 #ifndef FRONTEND
-/*
- * Open for write and Validate File Header:
- * 		header: {Format Version, Principal Key Name}
- *
- * Returns the file descriptor in case of a success. Otherwise, error
- * is raised.
- */
-static int
-pg_tde_open_file_write(const char *tde_filename, const TDESignedPrincipalKeyInfo *signed_key_info, bool truncate, off_t *curr_pos)
+static void
+pg_tde_write_principal_key(const char *filename, const TDESignedPrincipalKeyInfo *signed_key_info)
 {
 	int			fd;
-	TDEFileHeader fheader;
-	off_t		bytes_read = 0;
 	off_t		bytes_written = 0;
-	int			file_flags = O_RDWR | O_CREAT | PG_BINARY | (truncate ? O_TRUNC : 0);
 
 	Assert(LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_EXCLUSIVE));
 
-	fd = pg_tde_open_file_basic(tde_filename, file_flags, false);
+	fd = pg_tde_open_file_basic(filename, O_WRONLY | O_CREAT | PG_BINARY, false);
 
-	pg_tde_file_header_read(tde_filename, fd, &fheader, &bytes_read);
-	if (bytes_read > 0 && fheader.file_version != PG_TDE_SMGR_FILE_MAGIC)
-		ereport(FATAL,
-				errcode_for_file_access(),
-				errmsg("key file \"%s\" has wrong version: %m", tde_filename));
+	pg_tde_file_header_write(filename, fd, signed_key_info, &bytes_written);
 
-	/* In case it's a new file, let's add the header now. */
-	if (bytes_read == 0 && signed_key_info)
-		pg_tde_file_header_write(tde_filename, fd, signed_key_info, &bytes_written);
-
-	*curr_pos = bytes_read + bytes_written;
-	return fd;
+	CloseTransientFile(fd);
 }
 #endif
 
@@ -960,10 +934,8 @@ pg_tde_migrate_smgr_keys_file(void)
 	{
 		char		db_map_path[MAXPGPATH] = {0};
 		char		tmp_db_map_path[MAXPGPATH] = {0};
-		off_t		read_pos,
-					write_pos;
-		int			old_fd,
-					new_fd;
+		off_t		read_pos;
+		int			old_fd;
 		Oid			dbOid;
 		char	   *suffix;
 		TDEFileHeader fheader;
@@ -1012,15 +984,14 @@ pg_tde_migrate_smgr_keys_file(void)
 			pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
 		}
 
-		new_fd = pg_tde_open_file_write(tmp_db_map_path, &signed_key_info, true, &write_pos);
+		pg_tde_write_principal_key(tmp_db_map_path, &signed_key_info);
 
 		while (read_map_entry(old_fd, &read_pos, principal_key, &new_entry))
 		{
-			pg_tde_write_one_map_entry(new_fd, &new_entry, &write_pos, db_map_path);
+			//pg_tde_write_one_map_entry(new_fd, &new_entry, &write_pos, db_map_path);
 		}
 
 		CloseTransientFile(old_fd);
-		CloseTransientFile(new_fd);
 		durable_rename(tmp_db_map_path, db_map_path, ERROR);
 	}
 
