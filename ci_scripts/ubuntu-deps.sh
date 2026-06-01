@@ -40,8 +40,9 @@ DEPS=(
     xsltproc
     zlib1g-dev
     zstd
+    # pg_tde dependencies
+    meson
     # pg_tde test dependencies
-    libhttp-server-simple-perl
     lcov
     perltidy
 )
@@ -50,7 +51,7 @@ sudo apt-get update
 sudo apt-get install -y ${DEPS[@]}
 
 sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-pip3 install meson pykmip cryptography setuptools wheel
+pip3 install pykmip
 
 # OpenBao
 wget https://github.com/openbao/openbao/releases/download/v2.4.3/bao_2.4.3_linux_$(dpkg --print-architecture).deb

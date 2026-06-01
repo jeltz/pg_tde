@@ -1,9 +1,58 @@
 # Limitations of pg_tde
 
+## Known incompatibilities in Percona Server for PostgreSQL
+
+Some PostgreSQL extensions may not work with Percona Server for PostgreSQL due to internal changes required by `pg_tde`.
+
+These incompatibilities may occur even if `pg_tde` is not installed or enabled.
+
+### Distributed and extension-based systems
+
+!!! warning "Citus and TimescaleDB are not supported"
+    Percona Server for PostgreSQL is not compatible with distributed PostgreSQL extensions such as Citus or time-series extensions such as TimescaleDB.
+
+    This limitation is caused by internal PostgreSQL changes related to `pg_tde` and is not dependent on enabling the extension.
+
+## Limitations when using pg_tde
+
 Limitations of `pg_tde` {{release}}:
 
 * PostgreSQL’s internal system tables, which include statistics and metadata, are not encrypted.
 * Temporary files created when queries exceed `work_mem` are not encrypted. These files may persist during long-running queries or after a server crash which can expose sensitive data in plaintext on disk.
+
+## Recovery without `pg_tde` in `shared_preload_libraries`
+
+!!! danger "Risk of corruption when recovering encrypted clusters without pg_tde loaded"
+    When recovering a PostgreSQL cluster that contains encrypted tables, the `pg_tde` extension must be loaded through the `shared_preload_libraries` configuration parameter.
+
+## `pg_rewind` and `pg_tde_rewind`
+
+!!! danger "Risk of corruption when using `pg_rewind` or `pg_tde_rewind` with TDE"
+    When TDE is enabled, using `pg_rewind` or `pg_tde_rewind` between diverged PostgreSQL nodes may corrupt encrypted relations.
+
+    This happens because `pg_rewind` and `pg_tde_rewind` copy relation files between the data directories of two clusters. In some cases, only parts of files are replaced, leaving data encrypted with the internal encryption keys of the source cluster. This data cannot be decrypted by the destination cluster.
+    
+    For more information about how `pg_tde` manages internal encryption keys, see [How pg_tde works](how-does-tde-work.md) and [Encryption of data files](../faq.md#encryption-of-data-files).
+
+    This behavior is inherited from `pg_rewind` and is currently a known issue in `pg_tde_rewind`.
+
+    As a result, `pg_tde` may be unable to decrypt the copied data, causing queries to fail with errors such as:
+
+    ```bash
+    ERROR: 16 invalid pages among blocks 15..30 of relation "base/16384/16438"
+    ```
+
+## `ALTER DATABASE ... SET TABLESPACE`
+
+!!! warning "Changing a database tablespace has limited support with `pg_tde`"
+    The `ALTER DATABASE ... SET TABLESPACE` command bypasses PostgreSQL's storage manager (SMGR), which `pg_tde` relies on to enforce encryption.
+
+    - If encrypted objects exist in the database's default tablespace, the operation is refused.
+    - If no encrypted objects are present in the default tablespace, the operation is allowed.
+
+    Only objects in the default tablespace are checked. Objects in other tablespaces are not evaluated by `pg_tde`.
+
+    To move encrypted tables individually, use `ALTER TABLE ... SET TABLESPACE`, which operates through SMGR and is compatible with `pg_tde`.
 
 ## Currently unsupported WAL tools
 
@@ -16,8 +65,6 @@ The following tools are currently unsupported with `pg_tde` WAL encryption:
   As a workaround, use `-s` (skip checksum) and `-n` (`--no-parse-wal`) to verify backups.
 * The asynchronous archiving feature of pgBackRest.
 
-The following tools and extensions in Percona Distribution for PostgreSQL have been tested and verified to work with `pg_tde` WAL encryption:
-
 ## Supported WAL tools
 
 The following tools have been tested and verified by Percona to work with `pg_tde` WAL encryption:
@@ -26,6 +73,7 @@ The following tools have been tested and verified by Percona to work with `pg_td
 * `pg_tde_basebackup` (with `--wal-method=stream` or `--wal-method=none`), for details on using `pg_tde_basebackup` with WAL encryption, see [Backup with WAL encryption enabled](../how-to/backup-wal-enabled.md)
 * `pg_tde_resetwal`
 * `pg_tde_rewind`
+* `pg_tde_upgrade`
 * `pg_tde_waldump`
 * pgBackRest (asynchronous archiving is NOT supported with encrypted WAL)
 

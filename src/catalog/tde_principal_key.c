@@ -537,12 +537,29 @@ pg_tde_set_default_key_using_global_key_provider(PG_FUNCTION_ARGS)
 {
 	char	   *principal_key_name = PG_ARGISNULL(0) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(0));
 	char	   *provider_name = PG_ARGISNULL(1) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(1));
+	bool		need_server_key;
 
 	/* Using a global provider for the default encryption setting */
 	pg_tde_set_principal_key_internal(GLOBAL_DATA_TDE_OID,
 									  DEFAULT_DATA_TDE_OID,
 									  principal_key_name,
 									  provider_name);
+
+	/*
+	 * Ensure a server (WAL) principal key exists so that operations needing
+	 * it (e.g. pg_basebackup -E) work without first restarting the server.
+	 * Without this, the server key is only materialized lazily during the
+	 * next startup when WAL encryption is initialized.
+	 */
+	LWLockAcquire(tde_lwlock_enc_keys(), LW_SHARED);
+	need_server_key = (GetPrincipalKeyNoDefault(GLOBAL_DATA_TDE_OID, LW_SHARED) == NULL);
+	LWLockRelease(tde_lwlock_enc_keys());
+
+	if (need_server_key)
+		pg_tde_set_principal_key_internal(GLOBAL_DATA_TDE_OID,
+										  GLOBAL_DATA_TDE_OID,
+										  principal_key_name,
+										  provider_name);
 
 	PG_RETURN_VOID();
 }
@@ -696,7 +713,7 @@ pg_tde_delete_key(PG_FUNCTION_ARGS)
 	 * If database has something encryted, we can try to fallback to the
 	 * default principal key
 	 */
-	if (pg_tde_count_encryption_keys(MyDatabaseId) != 0)
+	if (pg_tde_count_encryption_keys(MyDatabaseId, InvalidOid) != 0)
 	{
 		default_principal_key = GetPrincipalKeyNoDefault(DEFAULT_DATA_TDE_OID, LW_EXCLUSIVE);
 		if (default_principal_key == NULL)
@@ -783,7 +800,7 @@ pg_tde_delete_default_key(PG_FUNCTION_ARGS)
 			 * delete default principal key if there are encrypted tables in
 			 * the database.
 			 */
-			if (pg_tde_count_encryption_keys(dbOid) != 0)
+			if (pg_tde_count_encryption_keys(dbOid, InvalidOid) != 0)
 			{
 				ereport(ERROR,
 						errcode(ERRCODE_OBJECT_IN_USE),
@@ -934,6 +951,13 @@ pg_tde_get_key_info(PG_FUNCTION_ARGS, Oid dbOid)
 
 #endif							/* FRONTEND */
 
+#ifdef FRONTEND
+/*
+ * Process-local cache for the server (GLOBAL_DATA_TDE_OID) principal key.
+ */
+static TDEPrincipalKey *fe_server_principal_key_cache = NULL;
+#endif							/* FRONTEND */
+
 /*
  * Get principal key form the keyring.
  */
@@ -1036,6 +1060,17 @@ GetPrincipalKeyNoDefault(Oid dbOid, LWLockMode lockMode)
 	}
 #endif
 
+#ifdef FRONTEND
+	/* Only cache the server key; it is the only one used in WAL encryption */
+	if (dbOid == GLOBAL_DATA_TDE_OID && fe_server_principal_key_cache != NULL)
+	{
+		TDEPrincipalKey *copy = palloc_object(TDEPrincipalKey);
+
+		*copy = *fe_server_principal_key_cache;
+		return copy;
+	}
+#endif
+
 	principalKey = get_principal_key_from_keyring(dbOid);
 
 #ifndef FRONTEND
@@ -1049,6 +1084,15 @@ GetPrincipalKeyNoDefault(Oid dbOid, LWLockMode lockMode)
 		 */
 		pfree(principalKey);
 		principalKey = get_principal_key_from_cache(dbOid);
+	}
+#else
+	/* Cache on first successful read for GLOBAL_DATA_TDE_OID */
+	if (principalKey != NULL &&
+		dbOid == GLOBAL_DATA_TDE_OID &&
+		fe_server_principal_key_cache == NULL)
+	{
+		fe_server_principal_key_cache = palloc_object(TDEPrincipalKey);
+		*fe_server_principal_key_cache = *principalKey;
 	}
 #endif
 

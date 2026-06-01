@@ -42,14 +42,12 @@ __pycache__
 /Release/
 /tmp_install/
 /portlock/
-/*.typedefs
 /regression.diffs
 /regression.out
 
 # Generated subdirectories
 /log/
 /results/
-/t/results/
 /tmp_check/
 /regress_install/
 /regress_install.log
@@ -58,6 +56,7 @@ __pycache__
 /src/bin/pg_tde_archive_decrypt
 /src/bin/pg_tde_change_key_provider
 /src/bin/pg_tde_restore_encrypt
+/src/bin/pg_tde_upgrade
 /fetools/*/pg_tde_basebackup
 /fetools/*/pg_tde_checksums
 /fetools/*/pg_tde_resetwal
@@ -66,4 +65,3 @@ __pycache__
 
 # Tool files
 /typedefs.list
-/typedefs-full.list

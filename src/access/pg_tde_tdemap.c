@@ -88,13 +88,25 @@ static void pg_tde_write_one_map_entry(int fd, const TDEMapEntry *map_entry, off
 static int	pg_tde_file_header_write(const char *tde_filename, int fd, const TDESignedPrincipalKeyInfo *signed_key_info, off_t *bytes_written);
 static void pg_tde_initialize_map_entry(TDEMapEntry *map_entry, const TDEPrincipalKey *principal_key, const RelFileLocator *rlocator, const InternalKey *rel_key_data);
 static int	pg_tde_open_file_write(const char *tde_filename, const TDESignedPrincipalKeyInfo *signed_key_info, bool truncate, off_t *curr_pos);
-static void pg_tde_replace_key_map_entry(const RelFileLocator *rlocator, const InternalKey *rel_key_data, const TDEPrincipalKey *principal_key);
 
+/*
+ * Saves an internal key for the given relation. If replace_existing is false,
+ * the function will not overwrite an existing key for the relation, but will
+ * instead do nothing.
+ */
 void
-pg_tde_save_smgr_key(RelFileLocator rel, const InternalKey *rel_key_data)
+pg_tde_save_smgr_key(RelFileLocator rel,
+					 const InternalKey *rel_key_data,
+					 bool replace_existing)
 {
-	TDEPrincipalKey *principal_key;
+	char		file_path[MAXPGPATH];
+	bool		entry_already_exists;
+	int			fd;
 	LWLock	   *lock_pk = tde_lwlock_enc_keys();
+	TDEPrincipalKey *principal_key;
+	off_t		scan_offset;
+	TDESignedPrincipalKeyInfo signed_key_info;
+	off_t		write_offset;
 
 	LWLockAcquire(lock_pk, LW_EXCLUSIVE);
 	principal_key = GetPrincipalKey(rel.dbOid, LW_EXCLUSIVE);
@@ -105,7 +117,54 @@ pg_tde_save_smgr_key(RelFileLocator rel, const InternalKey *rel_key_data)
 				errhint("Use pg_tde_set_key_using_database_key_provider() or pg_tde_set_key_using_global_key_provider() to configure one."));
 	}
 
-	pg_tde_replace_key_map_entry(&rel, rel_key_data, principal_key);
+	pg_tde_set_db_file_path(rel.dbOid, file_path);
+	pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
+
+	fd = pg_tde_open_file_write(file_path, &signed_key_info, false, &scan_offset);
+
+	/*
+	 * Look for an existing entry for the relation, also keep track of the
+	 * first free entry we find to be reused for the new key we're saving.
+	 */
+	entry_already_exists = false;
+	write_offset = 0;
+	while (1)
+	{
+		TDEMapEntry entry;
+		off_t		entry_offset = scan_offset;
+
+		if (!pg_tde_read_one_map_entry(fd, &entry, &scan_offset))
+		{
+			/*
+			 * If we're through the whole file without having found an empty
+			 * entry to overwrite, write at the end.
+			 */
+			if (write_offset == 0)
+				write_offset = entry_offset;
+			break;
+		}
+
+		if (entry.spcOid == rel.spcOid &&
+			entry.relNumber == rel.relNumber)
+		{
+			entry_already_exists = true;
+			write_offset = entry_offset;
+			break;
+		}
+
+		if (write_offset == 0 && entry.type == MAP_ENTRY_TYPE_EMPTY)
+			write_offset = entry_offset;
+	}
+
+	if (!entry_already_exists || replace_existing)
+	{
+		TDEMapEntry write_entry;
+
+		pg_tde_initialize_map_entry(&write_entry, principal_key, &rel, rel_key_data);
+		pg_tde_write_one_map_entry(fd, &write_entry, &write_offset, file_path);
+	}
+
+	CloseTransientFile(fd);
 	LWLockRelease(lock_pk);
 }
 
@@ -340,7 +399,7 @@ pg_tde_delete_principal_key(Oid dbOid)
 	char		path[MAXPGPATH];
 
 	Assert(LWLockHeldByMeInMode(tde_lwlock_enc_keys(), LW_EXCLUSIVE));
-	Assert(pg_tde_count_encryption_keys(dbOid) == 0);
+	Assert(pg_tde_count_encryption_keys(dbOid, InvalidOid) == 0);
 
 	pg_tde_set_db_file_path(dbOid, path);
 
@@ -373,8 +432,8 @@ pg_tde_sign_principal_key_info(TDESignedPrincipalKeyInfo *signed_key_info, const
 	AesGcmEncrypt(principal_key->keyData, principal_key->keyLength,
 				  signed_key_info->sign_iv, MAP_ENTRY_IV_SIZE,
 				  (unsigned char *) &signed_key_info->data, sizeof(signed_key_info->data),
-				  NULL, 0,
-				  NULL,
+				  (unsigned char *) "", 0,
+				  (unsigned char *) "",
 				  signed_key_info->aead_tag, MAP_ENTRY_AEAD_TAG_SIZE);
 }
 
@@ -430,67 +489,6 @@ pg_tde_write_one_map_entry(int fd, const TDEMapEntry *map_entry, off_t *offset, 
 }
 #endif
 
-#ifndef FRONTEND
-/*
- * The caller must hold an exclusive lock on the key file to avoid
- * concurrent in place updates leading to data conflicts.
- */
-void
-pg_tde_replace_key_map_entry(const RelFileLocator *rlocator, const InternalKey *rel_key_data, const TDEPrincipalKey *principal_key)
-{
-	char		db_map_path[MAXPGPATH];
-	int			map_fd;
-	off_t		curr_pos = 0;
-	off_t		write_pos = 0;
-	TDEMapEntry write_map_entry;
-	TDESignedPrincipalKeyInfo signed_key_Info;
-
-	Assert(rlocator);
-
-	pg_tde_set_db_file_path(rlocator->dbOid, db_map_path);
-
-	pg_tde_sign_principal_key_info(&signed_key_Info, principal_key);
-
-	/* Open and validate file for basic correctness. */
-	map_fd = pg_tde_open_file_write(db_map_path, &signed_key_Info, false, &curr_pos);
-
-	/*
-	 * Read until we find an empty slot. Otherwise, read until end. This seems
-	 * to be less frequent than vacuum. So let's keep this function here
-	 * rather than overloading the vacuum process.
-	 */
-	while (1)
-	{
-		TDEMapEntry read_map_entry;
-		off_t		prev_pos = curr_pos;
-
-		if (!pg_tde_read_one_map_entry(map_fd, &read_map_entry, &curr_pos))
-		{
-			if (write_pos == 0)
-				write_pos = prev_pos;
-			break;
-		}
-
-		if (read_map_entry.spcOid == rlocator->spcOid && read_map_entry.relNumber == rlocator->relNumber)
-		{
-			write_pos = prev_pos;
-			break;
-		}
-
-		if (write_pos == 0 && read_map_entry.type == MAP_ENTRY_TYPE_EMPTY)
-			write_pos = prev_pos;
-	}
-
-	/* Initialize map entry and encrypt key */
-	pg_tde_initialize_map_entry(&write_map_entry, principal_key, rlocator, rel_key_data);
-
-	/* Write the given entry at curr_pos; i.e. the free entry. */
-	pg_tde_write_one_map_entry(map_fd, &write_map_entry, &write_pos, db_map_path);
-
-	CloseTransientFile(map_fd);
-}
-#endif
-
 /*
  * Returns true if we find a valid match; e.g. type is not set to
  * MAP_ENTRY_TYPE_EMPTY and the relNumber and spcOid matches the one provided
@@ -530,7 +528,7 @@ pg_tde_find_map_entry(const RelFileLocator *rlocator, char *db_map_path, TDEMapE
  * Works even if the database has no key file.
  */
 int
-pg_tde_count_encryption_keys(Oid dbOid)
+pg_tde_count_encryption_keys(Oid dbOid, Oid spcOid)
 {
 	char		db_map_path[MAXPGPATH];
 	File		map_fd;
@@ -548,7 +546,8 @@ pg_tde_count_encryption_keys(Oid dbOid)
 
 	while (pg_tde_read_one_map_entry(map_fd, &map_entry, &curr_pos))
 	{
-		if (map_entry.type == MAP_ENTRY_TYPE_KEY)
+		if (map_entry.type == MAP_ENTRY_TYPE_KEY &&
+			(spcOid == InvalidOid || map_entry.spcOid == spcOid))
 			count++;
 	}
 
@@ -563,8 +562,8 @@ pg_tde_verify_principal_key_info(TDESignedPrincipalKeyInfo *signed_key_info, con
 	return AesGcmDecrypt(principal_key_data->data, principal_key_data->len,
 						 signed_key_info->sign_iv, MAP_ENTRY_IV_SIZE,
 						 (unsigned char *) &signed_key_info->data, sizeof(signed_key_info->data),
-						 NULL, 0,
-						 NULL,
+						 (unsigned char *) "", 0,
+						 (unsigned char *) "",
 						 signed_key_info->aead_tag, MAP_ENTRY_AEAD_TAG_SIZE);
 }
 
@@ -973,6 +972,13 @@ map_from_disk_entry_v3(int fd, off_t *entry_offset, const TDEPrincipalKey *princ
 	if (!read_one_map_entry_v3(fd, &disk_entry, entry_offset))
 		return false;
 
+	/* Decrypting empty entries would fail, so just return an empty entry. */
+	if (disk_entry.type == MAP_ENTRY_TYPE_EMPTY)
+	{
+		memset(out, 0, sizeof(TDEMapEntry));
+		return true;
+	}
+
 	ikey_from_map_entry_v3(&disk_entry, principal_key, &key);
 
 	rloc.spcOid = disk_entry.spcOid;
@@ -990,8 +996,6 @@ pg_tde_migrate_smgr_keys_file(void)
 	DIR		   *dir;
 	LWLock	   *lock_pk = tde_lwlock_enc_keys();
 	struct dirent *file;
-	TDEPrincipalKey *principal_key = NULL;
-	TDESignedPrincipalKeyInfo signed_key_info;
 
 	/*
 	 * No real need in lock here as the func should be called only on the
@@ -1017,6 +1021,8 @@ pg_tde_migrate_smgr_keys_file(void)
 		TDEFileHeader fheader;
 		MapFromDiskEntry read_map_entry;
 		TDEMapEntry new_entry;
+		TDEPrincipalKey *principal_key;
+		TDESignedPrincipalKeyInfo signed_key_info;
 
 
 		dbOid = strtoul(file->d_name, &suffix, 10);
@@ -1031,8 +1037,11 @@ pg_tde_migrate_smgr_keys_file(void)
 		old_fd = pg_tde_open_file_basic(db_map_path, O_RDONLY | PG_BINARY, false);
 		pg_tde_file_header_read(db_map_path, old_fd, &fheader, &read_pos);
 
-		/* check if we have anything to do */
-		if (fheader.file_version == PG_TDE_SMGR_FILE_MAGIC)
+		/*
+		 * Check if we have anything to do. read_pos == 0 means the file had
+		 * no header because it was empty.
+		 */
+		if (read_pos == 0 || fheader.file_version == PG_TDE_SMGR_FILE_MAGIC)
 		{
 			CloseTransientFile(old_fd);
 			continue;
@@ -1048,22 +1057,21 @@ pg_tde_migrate_smgr_keys_file(void)
 		 * The old file exists and it's not empty, hence a principal key
 		 * should exist as well.
 		 */
+		principal_key = GetPrincipalKey(dbOid, LW_EXCLUSIVE);
 		if (principal_key == NULL)
 		{
-			principal_key = GetPrincipalKey(dbOid, LW_EXCLUSIVE);
-			if (principal_key == NULL)
-			{
-				ereport(ERROR,
-						errmsg("could not get server principal key"),
-						errdetail("Failed to migrate the keys file of %u database.", dbOid));
-			}
-			pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
+			ereport(ERROR,
+					errmsg("failed to retrieve principal key for database %u", dbOid),
+					errdetail("Failed to migrate the keys file of database %u.", dbOid));
 		}
+		pg_tde_sign_principal_key_info(&signed_key_info, principal_key);
 
 		new_fd = pg_tde_open_file_write(tmp_db_map_path, &signed_key_info, true, &write_pos);
 
 		while (read_map_entry(old_fd, &read_pos, principal_key, &new_entry))
 		{
+			if (new_entry.type == MAP_ENTRY_TYPE_EMPTY)
+				continue;
 			pg_tde_write_one_map_entry(new_fd, &new_entry, &write_pos, db_map_path);
 		}
 

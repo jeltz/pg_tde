@@ -15,7 +15,8 @@ DEPS=(
     lz4
     openssl
     zstd
-
+    # Build pg_tde
+    meson
     # Run pgperltidy
     perltidy
 )
@@ -23,8 +24,8 @@ DEPS=(
 brew update
 brew install ${DEPS[@]}
 
-pip3 install meson pykmip cryptography setuptools wheel
-cpan IPC::Run JSON
+pip3 install pykmip
+cpan -T IPC::Run JSON
 
 # OpenBao
 wget https://github.com/openbao/openbao/releases/download/v2.4.3/bao_2.4.3_Darwin_arm64.tar.gz
