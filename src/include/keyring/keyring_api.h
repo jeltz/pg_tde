@@ -13,6 +13,7 @@ typedef enum ProviderType
 	FILE_KEY_PROVIDER,
 	VAULT_V2_KEY_PROVIDER,
 	KMIP_KEY_PROVIDER,
+	AWS_KMS_KEY_PROVIDER,
 } ProviderType;
 
 typedef struct KeyData
@@ -74,6 +75,15 @@ typedef struct KmipKeyring
 	char	   *kmip_cert_path;
 	char	   *kmip_key_path;
 } KmipKeyring;
+
+typedef struct AwsKmsKeyring
+{
+	GenericKeyring keyring;		/* Must be the first field */
+	char	   *aws_server;
+	char	   *aws_region;
+	char	   *aws_secretkey;
+	char	   *aws_keyid;
+} AwsKmsKeyring;
 
 extern void RegisterKeyProviderType(const TDEKeyringRoutine *routine, ProviderType type);
 

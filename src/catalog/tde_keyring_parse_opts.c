@@ -268,6 +268,9 @@ json_kring_object_field_start(void *state, char *fname, bool isnull)
 					}
 					break;
 
+				case AWS_KMS_KEY_PROVIDER:
+					break;
+
 				case UNKNOWN_KEY_PROVIDER:
 					return JSON_INVALID_TOKEN;
 			}
