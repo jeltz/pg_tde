@@ -46,7 +46,6 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 	KeyRecord	record;
 	int			fd = -1;
 	FileKeyring *file_keyring = (FileKeyring *) keyring;
-	off_t		bytes_read = 0;
 	off_t		curr_pos = 0;
 
 	*return_code = KEYRING_CODE_SUCCESS;
@@ -57,8 +56,7 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 
 	while (true)
 	{
-		bytes_read = pg_pread(fd, &record, sizeof(record), curr_pos);
-		curr_pos += bytes_read;
+		off_t		bytes_read = pg_pread(fd, &record, sizeof(record), curr_pos);
 
 		if (bytes_read == 0)
 		{
@@ -69,10 +67,10 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 			CloseTransientFile(fd);
 			return NULL;
 		}
-		if (bytes_read != sizeof(record))
+		else if (bytes_read != sizeof(record))
 		{
-			CloseTransientFile(fd);
 			/* Corrupt file */
+			CloseTransientFile(fd);
 			*return_code = KEYRING_CODE_DATA_CORRUPTED;
 			ereport(WARNING,
 					errcode_for_file_access(),
@@ -82,6 +80,7 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 							  (long long int) bytes_read, sizeof(record)));
 			return NULL;
 		}
+
 		if (pg_strncasecmp(record.name, key_name, sizeof(record.name)) == 0)
 		{
 			KeyData    *key = palloc_object(KeyData);
@@ -90,8 +89,12 @@ get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode
 			CloseTransientFile(fd);
 			return key;
 		}
+
+		curr_pos += bytes_read;
 	}
+
 	CloseTransientFile(fd);
+
 	return NULL;
 }
 
@@ -104,10 +107,11 @@ set_key_by_name(GenericKeyring *keyring, const char *key_name, const KeyData *ke
 	int			fd;
 	FileKeyring *file_keyring = (FileKeyring *) keyring;
 	KeyData    *existing_key;
-	KeyringReturnCode return_code = KEYRING_CODE_SUCCESS;
+	KeyringReturnCode return_code;
 
 	Assert(key_name != NULL);
 	Assert(key != NULL);
+
 	/* See if the key with same name already exists */
 	existing_key = get_key_by_name(keyring, key_name, &return_code);
 	if (existing_key)
@@ -126,8 +130,10 @@ set_key_by_name(GenericKeyring *keyring, const char *key_name, const KeyData *ke
 				errcode_for_file_access(),
 				errmsg("Failed to open keyring file %s: %m", file_keyring->file_name));
 	}
+
 	/* Write key to the end of file */
 	curr_pos = lseek(fd, 0, SEEK_END);
+
 	bytes_written = pg_pwrite(fd, &record, sizeof(record), curr_pos);
 	if (bytes_written != sizeof(record))
 	{
@@ -144,6 +150,7 @@ set_key_by_name(GenericKeyring *keyring, const char *key_name, const KeyData *ke
 				errmsg("could not fsync file \"%s\": %m",
 					   file_keyring->file_name));
 	}
+
 	CloseTransientFile(fd);
 }
 
