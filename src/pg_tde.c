@@ -27,6 +27,7 @@
 #include "catalog/tde_principal_key.h"
 #include "encryption/enc_aes.h"
 #include "keyring/keyring_api.h"
+#include "keyring/keyring_aws.h"
 #include "keyring/keyring_file.h"
 #include "keyring/keyring_kmip.h"
 #include "keyring/keyring_vault.h"
@@ -118,6 +119,7 @@ _PG_init(void)
 	AesInit();
 	TdeGucInit();
 	TdeEventCaptureInit();
+	InstallAwsKmsKeyring();
 	InstallFileKeyring();
 	InstallVaultV2Keyring();
 	InstallKmipKeyring();

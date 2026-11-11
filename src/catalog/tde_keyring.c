@@ -53,11 +53,13 @@ typedef enum ProviderScanType
 #define FILE_KEYRING_TYPE "file"
 #define VAULT_V2_KEYRING_TYPE "vault-v2"
 #define KMIP_KEYRING_TYPE "kmip"
+#define AWS_KMS_KEYRING_TYPE "aws-kms"
 
 static void debug_print_kerying(GenericKeyring *keyring);
 static bool fetch_next_key_provider(int fd, off_t *curr_pos, KeyringProviderRecord *provider);
 static inline void get_keyring_infofile_path(char *resPath, Oid dbOid);
 static GenericKeyring *load_keyring_provider_from_record(KeyringProviderRecord *provider);
+static AwsKmsKeyring *load_aws_kms_keyring_provider_options(char *keyring_options);
 static FileKeyring *load_file_keyring_provider_options(char *keyring_options);
 static KmipKeyring *load_kmip_keyring_provider_options(char *keyring_options);
 static VaultV2Keyring *load_vault_v2_keyring_provider_options(char *keyring_options);
@@ -151,6 +153,8 @@ get_keyring_provider_typename(ProviderType p_type)
 			return VAULT_V2_KEYRING_TYPE;
 		case KMIP_KEY_PROVIDER:
 			return KMIP_KEYRING_TYPE;
+		case AWS_KMS_KEY_PROVIDER:
+			return AWS_KMS_KEYRING_TYPE;
 		default:
 			return NULL;
 	}
@@ -588,6 +592,7 @@ free_keyring(GenericKeyring *keyring)
 	FileKeyring *file = (FileKeyring *) keyring;
 	VaultV2Keyring *vault = (VaultV2Keyring *) keyring;
 	KmipKeyring *kmip = (KmipKeyring *) keyring;
+	AwsKmsKeyring *aws = (AwsKmsKeyring *) keyring;
 
 	switch (keyring->type)
 	{
@@ -620,6 +625,18 @@ free_keyring(GenericKeyring *keyring)
 				pfree(kmip->kmip_key_path);
 			if (kmip->kmip_port)
 				pfree(kmip->kmip_port);
+			break;
+		case AWS_KMS_KEY_PROVIDER:
+			if (aws->aws_server)
+				pfree(aws->aws_server);
+			if (aws->aws_region)
+				pfree(aws->aws_region);
+			if (aws->aws_access_key)
+				pfree(aws->aws_access_key);
+			if (aws->aws_secret_key)
+				pfree(aws->aws_secret_key);
+			if (aws->aws_key_id)
+				pfree(aws->aws_key_id);
 			break;
 		default:
 			Assert(false);
@@ -847,6 +864,9 @@ load_keyring_provider_from_record(KeyringProviderRecord *provider)
 		case KMIP_KEY_PROVIDER:
 			keyring = (GenericKeyring *) load_kmip_keyring_provider_options(provider->options);
 			break;
+		case AWS_KMS_KEY_PROVIDER:
+			keyring = (GenericKeyring *) load_aws_kms_keyring_provider_options(provider->options);
+			break;
 		default:
 			ereport(ERROR,
 					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -940,6 +960,35 @@ load_kmip_keyring_provider_options(char *keyring_options)
 	return kmip_keyring;
 }
 
+static AwsKmsKeyring *
+load_aws_kms_keyring_provider_options(char *keyring_options)
+{
+	AwsKmsKeyring *aws_keyring = palloc0_object(AwsKmsKeyring);
+
+	aws_keyring->keyring.type = AWS_KMS_KEY_PROVIDER;
+
+	ParseKeyringJSONOptions(AWS_KMS_KEY_PROVIDER, (GenericKeyring *) aws_keyring,
+							keyring_options, strlen(keyring_options));
+
+	if (aws_keyring->aws_server == NULL || aws_keyring->aws_server[0] == '\0' ||
+		aws_keyring->aws_region == NULL || aws_keyring->aws_region[0] == '\0' ||
+		aws_keyring->aws_access_key == NULL || aws_keyring->aws_access_key[0] == '\0' ||
+		aws_keyring->aws_secret_key == NULL || aws_keyring->aws_secret_key[0] == '\0' ||
+		aws_keyring->aws_key_id == NULL || aws_keyring->aws_key_id[0] == '\0')
+	{
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("missing in the keyring options:%s%s%s%s%s",
+					   (aws_keyring->aws_server != NULL && aws_keyring->aws_server[0] != '\0') ? "" : " server",
+					   (aws_keyring->aws_region != NULL && aws_keyring->aws_region[0] != '\0') ? "" : " region",
+					   (aws_keyring->aws_access_key != NULL && aws_keyring->aws_access_key[0] != '\0') ? "" : " accessKey",
+					   (aws_keyring->aws_secret_key != NULL && aws_keyring->aws_secret_key[0] != '\0') ? "" : " secretKey",
+					   (aws_keyring->aws_key_id != NULL && aws_keyring->aws_key_id[0] != '\0') ? "" : " keyId"));
+	}
+
+	return aws_keyring;
+}
+
 #define MAX_FILE_DATA_LENGTH 1024
 
 static char *
@@ -998,6 +1047,13 @@ debug_print_kerying(GenericKeyring *keyring)
 			elog(DEBUG2, "KMIP Keyring CA Path: %s", ((KmipKeyring *) keyring)->kmip_ca_path);
 			elog(DEBUG2, "KMIP Keyring Cert Path: %s", ((KmipKeyring *) keyring)->kmip_cert_path);
 			elog(DEBUG2, "KMIP Keyring Key Path: %s", ((KmipKeyring *) keyring)->kmip_key_path);
+			break;
+		case AWS_KMS_KEY_PROVIDER:
+			/* secret_key is intentionally skipped */
+			elog(DEBUG2, "AWS Keyring Server: %s", ((AwsKmsKeyring *) keyring)->aws_server);
+			elog(DEBUG2, "AWS Keyring Region: %s", ((AwsKmsKeyring *) keyring)->aws_region);
+			elog(DEBUG2, "AWS Keyring Access Key: %s", ((AwsKmsKeyring *) keyring)->aws_access_key);
+			elog(DEBUG2, "AWS Keyring Key ID: %s", ((AwsKmsKeyring *) keyring)->aws_key_id);
 			break;
 		case UNKNOWN_KEY_PROVIDER:
 			break;
@@ -1068,6 +1124,8 @@ get_keyring_provider_from_typename(char *provider_type)
 		return VAULT_V2_KEY_PROVIDER;
 	else if (strcmp(KMIP_KEYRING_TYPE, provider_type) == 0)
 		return KMIP_KEY_PROVIDER;
+	else if (strcmp(AWS_KMS_KEYRING_TYPE, provider_type) == 0)
+		return AWS_KMS_KEY_PROVIDER;
 	else
 		return UNKNOWN_KEY_PROVIDER;
 }

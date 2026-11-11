@@ -44,6 +44,12 @@ typedef enum JsonKeyringField
 	JK_KMIP_CERT_PATH,
 	JK_KMIP_KEY_PATH,
 
+	JK_AWS_SERVER,
+	JK_AWS_REGION,
+	JK_AWS_ACCESS_KEY,
+	JK_AWS_SECRET_KEY,
+	JK_AWS_KEY_ID,
+
 	/* must be the last */
 	JK_FIELDS_TOTAL
 } JsonKeyringField;
@@ -69,6 +75,12 @@ static const char *JK_FIELD_NAMES[JK_FIELDS_TOTAL] = {
 	[JK_KMIP_CA_PATH] = "caPath",
 	[JK_KMIP_CERT_PATH] = "certPath",
 	[JK_KMIP_KEY_PATH] = "keyPath",
+
+	[JK_AWS_SERVER] = "server",
+	[JK_AWS_REGION] = "region",
+	[JK_AWS_ACCESS_KEY] = "accessKey",
+	[JK_AWS_SECRET_KEY] = "secretKey",
+	[JK_AWS_KEY_ID] = "keyId",
 };
 
 typedef struct JsonKeyringState
@@ -268,6 +280,26 @@ json_kring_object_field_start(void *state, char *fname, bool isnull)
 					}
 					break;
 
+				case AWS_KMS_KEY_PROVIDER:
+					if (strcmp(fname, JK_FIELD_NAMES[JK_AWS_SERVER]) == 0)
+						parse->current_field = JK_AWS_SERVER;
+					else if (strcmp(fname, JK_FIELD_NAMES[JK_AWS_REGION]) == 0)
+						parse->current_field = JK_AWS_REGION;
+					else if (strcmp(fname, JK_FIELD_NAMES[JK_AWS_ACCESS_KEY]) == 0)
+						parse->current_field = JK_AWS_ACCESS_KEY;
+					else if (strcmp(fname, JK_FIELD_NAMES[JK_AWS_SECRET_KEY]) == 0)
+						parse->current_field = JK_AWS_SECRET_KEY;
+					else if (strcmp(fname, JK_FIELD_NAMES[JK_AWS_KEY_ID]) == 0)
+						parse->current_field = JK_AWS_KEY_ID;
+					else
+					{
+						parse->current_field = JK_FIELD_UNKNOWN;
+						ereport(ERROR,
+								errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								errmsg("unexpected field \"%s\" for aws-kms provider", fname));
+					}
+					break;
+
 				case UNKNOWN_KEY_PROVIDER:
 					return JSON_INVALID_TOKEN;
 			}
@@ -330,6 +362,7 @@ json_kring_assign_scalar(JsonKeyringState *parse, JsonKeyringField field, char *
 	VaultV2Keyring *vault = (VaultV2Keyring *) parse->provider_opts;
 	FileKeyring *file = (FileKeyring *) parse->provider_opts;
 	KmipKeyring *kmip = (KmipKeyring *) parse->provider_opts;
+	AwsKmsKeyring *aws = (AwsKmsKeyring *) parse->provider_opts;
 
 	switch (field)
 	{
@@ -367,6 +400,22 @@ json_kring_assign_scalar(JsonKeyringState *parse, JsonKeyringField field, char *
 			break;
 		case JK_KMIP_KEY_PATH:
 			kmip->kmip_key_path = value;
+			break;
+
+		case JK_AWS_SERVER:
+			aws->aws_server = value;
+			break;
+		case JK_AWS_REGION:
+			aws->aws_region = value;
+			break;
+		case JK_AWS_ACCESS_KEY:
+			aws->aws_access_key = value;
+			break;
+		case JK_AWS_SECRET_KEY:
+			aws->aws_secret_key = value;
+			break;
+		case JK_AWS_KEY_ID:
+			aws->aws_key_id = value;
 			break;
 
 		default:
