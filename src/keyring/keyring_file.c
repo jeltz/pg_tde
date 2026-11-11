@@ -24,22 +24,6 @@ typedef struct
 	KeyData		key;
 } KeyRecord;
 
-static KeyData *get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode *return_code);
-static void set_key_by_name(GenericKeyring *keyring, const char *key_name, const KeyData *key);
-static void validate(GenericKeyring *keyring);
-
-static const TDEKeyringRoutine keyringFileRoutine = {
-	.keyring_get_key = get_key_by_name,
-	.keyring_store_key = set_key_by_name,
-	.keyring_validate = validate,
-};
-
-void
-InstallFileKeyring(void)
-{
-	RegisterKeyProviderType(&keyringFileRoutine, FILE_KEY_PROVIDER);
-}
-
 static KeyData *
 get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode *return_code)
 {
@@ -168,4 +152,16 @@ validate(GenericKeyring *keyring)
 	}
 
 	CloseTransientFile(fd);
+}
+
+static const TDEKeyringRoutine keyringFileRoutine = {
+	.keyring_get_key = get_key_by_name,
+	.keyring_store_key = set_key_by_name,
+	.keyring_validate = validate,
+};
+
+void
+InstallFileKeyring(void)
+{
+	RegisterKeyProviderType(&keyringFileRoutine, FILE_KEY_PROVIDER);
 }

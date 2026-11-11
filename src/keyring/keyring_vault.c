@@ -81,25 +81,6 @@ static JsonParseErrorType json_mountinfo_scalar(void *state, char *token, JsonTo
 static JsonParseErrorType json_mountinfo_object_field_start(void *state, char *fname, bool isnull);
 static JsonParseErrorType parse_vault_mount_info(JsonVaultMountInfoState *state, JsonLexContext *lex);
 
-static char *get_keyring_vault_url(VaultV2Keyring *keyring, const char *key_name, char *out, size_t out_size);
-static bool curl_perform(VaultV2Keyring *keyring, const char *url, CurlString *outStr, long *httpCode, const char *postData);
-
-static void set_key_by_name(GenericKeyring *keyring, const char *key_name, const KeyData *key);
-static KeyData *get_key_by_name(GenericKeyring *keyring, const char *key_name, KeyringReturnCode *return_code);
-static void validate(GenericKeyring *keyring);
-
-static const TDEKeyringRoutine keyringVaultV2Routine = {
-	.keyring_get_key = get_key_by_name,
-	.keyring_store_key = set_key_by_name,
-	.keyring_validate = validate,
-};
-
-void
-InstallVaultV2Keyring(void)
-{
-	RegisterKeyProviderType(&keyringVaultV2Routine, VAULT_V2_KEY_PROVIDER);
-}
-
 static bool
 curl_perform(VaultV2Keyring *keyring, const char *url, CurlString *outStr, long *httpCode, const char *postData)
 {
@@ -442,6 +423,18 @@ validate(GenericKeyring *keyring)
 
 	if (str.ptr != NULL)
 		pfree(str.ptr);
+}
+
+static const TDEKeyringRoutine keyringVaultV2Routine = {
+	.keyring_get_key = get_key_by_name,
+	.keyring_store_key = set_key_by_name,
+	.keyring_validate = validate,
+};
+
+void
+InstallVaultV2Keyring(void)
+{
+	RegisterKeyProviderType(&keyringVaultV2Routine, VAULT_V2_KEY_PROVIDER);
 }
 
 /*
