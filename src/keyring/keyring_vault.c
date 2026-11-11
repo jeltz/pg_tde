@@ -464,23 +464,21 @@ validate(GenericKeyring *keyring)
 static JsonParseErrorType
 parse_json_response(JsonVaultRespState *parse, JsonLexContext *lex)
 {
-	JsonSemAction sem;
+	JsonSemAction sem = {
+		.semstate = parse,
+		.object_start = json_resp_object_start,
+		.object_end = json_resp_object_end,
+		.object_field_start = json_resp_object_field_start,
+		.object_field_end = NULL,
+		.array_element_start = NULL,
+		.array_element_end = NULL,
+		.scalar = json_resp_scalar,
+	};
 
 	parse->state = JRESP_EXPECT_TOP_DATA;
 	parse->level = -1;
 	parse->field = JRESP_F_UNUSED;
 	parse->key = NULL;
-
-	sem.semstate = parse;
-	sem.object_start = json_resp_object_start;
-	sem.object_end = json_resp_object_end;
-	sem.array_start = NULL;
-	sem.array_end = NULL;
-	sem.object_field_start = json_resp_object_field_start;
-	sem.object_field_end = NULL;
-	sem.array_element_start = NULL;
-	sem.array_element_end = NULL;
-	sem.scalar = json_resp_scalar;
 
 	return pg_parse_json(lex, &sem);
 }
@@ -589,19 +587,18 @@ json_resp_object_field_start(void *state, char *fname, bool isnull)
 static JsonParseErrorType
 parse_vault_mount_info(JsonVaultMountInfoState *state, JsonLexContext *lex)
 {
-	JsonSemAction sem;
+	JsonSemAction sem = {
+		.semstate = state,
+		.object_start = json_mountinfo_object_start,
+		.object_end = json_mountinfo_object_end,
+		.scalar = json_mountinfo_scalar,
+		.object_field_start = json_mountinfo_object_field_start,
+	};
 
 	state->state = JRESP_MOUNT_INFO_EXPECT_TOPLEVEL_FIELD;
+	state->level = -1;
 	state->type = NULL;
 	state->version = NULL;
-	state->level = -1;
-
-	memset(&sem, 0, sizeof(sem));
-	sem.semstate = state;
-	sem.object_start = json_mountinfo_object_start;
-	sem.object_end = json_mountinfo_object_end;
-	sem.scalar = json_mountinfo_scalar;
-	sem.object_field_start = json_mountinfo_object_field_start;
 
 	return pg_parse_json(lex, &sem);
 }
