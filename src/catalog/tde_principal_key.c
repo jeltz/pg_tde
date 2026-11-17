@@ -538,12 +538,12 @@ pg_tde_create_principal_key_internal(Oid providerOid,
 
 	provider = GetKeyProviderByName(provider_name, providerOid);
 
-	key = KeyringGetKey(provider, key_name, &return_code);
-
-	if (key != NULL)
-		ereport(ERROR,
-				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				errmsg("cannot create key \"%s\" because it already exists", key_name));
+//	key = KeyringGetKey(provider, key_name, &return_code);
+//
+//	if (key != NULL)
+//		ereport(ERROR,
+//				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+//				errmsg("cannot create key \"%s\" because it already exists", key_name));
 
 	key = KeyringGenerateNewKeyAndStore(provider, key_name, KeyLength);
 
