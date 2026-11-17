@@ -57,8 +57,8 @@ typedef enum ProviderScanType
 static void debug_print_kerying(GenericKeyring *keyring);
 static bool fetch_next_key_provider(int fd, off_t *curr_pos, KeyringProviderRecord *provider);
 static inline void get_keyring_infofile_path(char *resPath, Oid dbOid);
-static FileKeyring *load_file_keyring_provider_options(char *keyring_options);
 static GenericKeyring *load_keyring_provider_from_record(KeyringProviderRecord *provider);
+static FileKeyring *load_file_keyring_provider_options(char *keyring_options);
 static KmipKeyring *load_kmip_keyring_provider_options(char *keyring_options);
 static VaultV2Keyring *load_vault_v2_keyring_provider_options(char *keyring_options);
 static int	open_keyring_infofile(Oid dbOid, int flags);
